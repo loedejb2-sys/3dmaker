@@ -6,7 +6,7 @@ const shapeIndicator = document.getElementById('shape-indicator');
 
 let systemActive = false;
 let thumbsUpFrames = 0;
-const REQUIRED_CONFIRMATION_FRAMES = 25; // Increased buffer so it's less sensitive to accidental gestures
+const REQUIRED_CONFIRMATION_FRAMES = 25;
 
 let latestPose = null;
 let latestHands = null;
@@ -31,13 +31,13 @@ const shapesArray = ['CUBE', 'SPHERE', 'TORUS', 'CONE'];
 let currentShapeIndex = 0;
 let lastSpawnTime = 0;
 
-// Cursor 3D Mesh with position smoothing (LERP)
 const cursorGeometry = new THREE.SphereGeometry(0.1, 16, 16);
 const cursorMaterial = new THREE.MeshStandardMaterial({ color: 0xff007f, emissive: 0xff007f });
 const handCursor = new THREE.Mesh(cursorGeometry, cursorMaterial);
 scene.add(handCursor);
 
 let smoothedCursorPos = new THREE.Vector3(0, 0, 0);
+let smoothedPoseLandmarks = null;
 
 function resizeCanvas() {
     canvasElement.width = window.innerWidth;
@@ -49,16 +49,55 @@ function resizeCanvas() {
 window.addEventListener('resize', resizeCanvas);
 resizeCanvas();
 
-// Strict 21-point Hand Thumbs-Up Algorithm with stricter angular bounds
+// Complete Full-Body Anatomical Skeleton Connections (Mapping MediaPipe 33-point topology)
+const FULL_BODY_CONNECTIONS = [
+    // Torso / Core
+    [11, 12], [11, 23], [12, 24], [23, 24],
+    // Right Arm
+    [12, 14], [14, 16], [16, 18], [16, 20], [16, 22], [18, 20],
+    // Left Arm
+    [11, 13], [13, 15], [15, 17], [15, 19], [15, 21], [17, 19],
+    // Right Leg
+    [24, 26], [26, 28], [28, 30], [28, 32], [30, 32],
+    // Left Leg
+    [23, 25], [25, 27], [27, 29], [27, 31], [29, 31],
+    // Face outline / Head structure
+    [0, 1], [1, 2], [2, 3], [3, 7], [0, 4], [4, 5], [5, 6], [6, 8], [9, 10]
+];
+
+const HAND_CONNECTIONS = [
+    [0,1],[1,2],[2,3],[3,4],
+    [0,5],[5,6],[6,7],[7,8],
+    [5,9],[9,10],[10,11],[11,12],
+    [9,13],[13,14],[14,15],[15,16],
+    [13,17],[17,18],[18,19],[19,20],
+    [0,17]
+];
+
+// Smart smoothing algorithm to completely eliminate joint jitter
+function smoothLandmarks(newLandmarks) {
+    if (!smoothedPoseLandmarks) {
+        smoothedPoseLandmarks = JSON.parse(JSON.stringify(newLandmarks));
+        return smoothedPoseLandmarks;
+    }
+    const LERP_FACTOR = 0.3;
+    for (let i = 0; i < newLandmarks.length; i++) {
+        if (newLandmarks[i]) {
+            if (!smoothedPoseLandmarks[i]) smoothedPoseLandmarks[i] = { ...newLandmarks[i] };
+            smoothedPoseLandmarks[i].x = LERP_FACTOR * newLandmarks[i].x + (1 - LERP_FACTOR) * smoothedPoseLandmarks[i].x;
+            smoothedPoseLandmarks[i].y = LERP_FACTOR * newLandmarks[i].y + (1 - LERP_FACTOR) * smoothedPoseLandmarks[i].y;
+            smoothedPoseLandmarks[i].z = LERP_FACTOR * newLandmarks[i].z + (1 - LERP_FACTOR) * smoothedPoseLandmarks[i].z;
+            smoothedPoseLandmarks[i].visibility = newLandmarks[i].visibility;
+        }
+    }
+    return smoothedPoseLandmarks;
+}
+
 function isStrictThumbsUp(landmarks) {
-    const wrist = landmarks[0];
     const thumbTip = landmarks[4];
     const indexMcp = landmarks[5];
-
-    // Thumb must be pointed up and significantly separated from the palm
     const thumbExtended = thumbTip.y < indexMcp.y - 0.05;
 
-    // All fingers must be fully curled (tips must be lower/further down than joint centers)
     const indexFolded = landmarks[8].y > landmarks[6].y;
     const middleFolded = landmarks[12].y > landmarks[10].y;
     const ringFolded = landmarks[16].y > landmarks[14].y;
@@ -67,17 +106,12 @@ function isStrictThumbsUp(landmarks) {
     return thumbExtended && indexFolded && middleFolded && ringFolded && pinkyFolded;
 }
 
-// Stricter, desensitized pinch check with a distinct release threshold
 let isPinching = false;
 function checkPinchState(landmarks) {
-    const tipIndex = landmarks[8];
-    const tipThumb = landmarks[4];
-    const dx = tipIndex.x - tipThumb.x;
-    const dy = tipIndex.y - tipThumb.y;
+    const dx = landmarks[8].x - landmarks[4].x;
+    const dy = landmarks[8].y - landmarks[4].y;
     const distance = Math.sqrt(dx * dx + dy * dy);
 
-    // Hysteresis: Require a tight pinch to trigger (0.04), but a wider gap to un-pinch (0.07) 
-    // to prevent rapid-fire accidental double-spawns from slight finger trembling.
     if (!isPinching && distance < 0.04) {
         isPinching = true;
         return true;
@@ -119,7 +153,7 @@ function processFrame() {
         canvasCtx.drawImage(latestPose.image, 0, 0, canvasElement.width, canvasElement.height);
     }
 
-    // 1. Activation Gate via Thumbs Up (Desensitized with frame buffer)
+    // 1. Activation Check via Thumbs Up
     if (!systemActive) {
         let detectedThumbsUp = false;
         if (latestHands && latestHands.multiHandLandmarks) {
@@ -136,12 +170,43 @@ function processFrame() {
                 statusElement.innerText = "Workspace Unlocked • Pinch index & thumb to spawn shapes";
             }
         } else {
-            thumbsUpFrames = Math.max(0, thumbsUpFrames - 2); // Decays faster if gesture drops
+            thumbsUpFrames = Math.max(0, thumbsUpFrames - 2);
             statusElement.innerText = "LOCKED: Hold a strict Thumbs Up steadily to unlock";
         }
     }
 
-    // 2. Interactive 3D Maker Logic with Position Smoothing (LERP)
+    // 2. Render Full Anatomical Body Skeleton Map
+    if (latestPose && latestPose.poseLandmarks) {
+        const landmarks = smoothLandmarks(latestPose.poseLandmarks);
+
+        // Draw structural bone connections
+        canvasCtx.strokeStyle = systemActive ? 'rgba(0, 242, 254, 0.8)' : 'rgba(255, 255, 255, 0.25)';
+        canvasCtx.lineWidth = 3;
+        canvasCtx.lineCap = 'round';
+
+        for (let [u, v] of FULL_BODY_CONNECTIONS) {
+            const p1 = landmarks[u];
+            const p2 = landmarks[v];
+            if (p1 && p2 && p1.visibility > 0.6 && p2.visibility > 0.6) {
+                canvasCtx.beginPath();
+                canvasCtx.moveTo(p1.x * canvasElement.width, p1.y * canvasElement.height);
+                canvasCtx.lineTo(p2.x * canvasElement.width, p2.y * canvasElement.height);
+                canvasCtx.stroke();
+            }
+        }
+
+        // Draw anatomical joint nodes
+        for (let lm of landmarks) {
+            if (lm && lm.visibility > 0.6) {
+                canvasCtx.fillStyle = systemActive ? '#ff007f' : 'rgba(255, 255, 255, 0.5)';
+                canvasCtx.beginPath();
+                canvasCtx.arc(lm.x * canvasElement.width, lm.y * canvasElement.height, 4, 0, 2 * Math.PI);
+                canvasCtx.fill();
+            }
+        }
+    }
+
+    // 3. 3D Object Maker & Hand Cursor Logic
     if (systemActive && latestHands && latestHands.multiHandLandmarks && latestHands.multiHandLandmarks.length > 0) {
         const hand = latestHands.multiHandLandmarks[0];
         const indexTip = hand[8];
@@ -149,16 +214,14 @@ function processFrame() {
         const rawTargetX = -(indexTip.x - 0.5) * 8;
         const rawTargetY = -(indexTip.y - 0.5) * 6;
 
-        // Linear interpolation (LERP factor 0.2) removes micro-jitters from hand shaking
-        smoothedCursorPos.x += (rawTargetX - smoothedCursorPos.x) * 0.2;
-        smoothedCursorPos.y += (rawTargetY - smoothedCursorPos.y) * 0.2;
+        smoothedCursorPos.x += (rawTargetX - smoothedCursorPos.x) * 0.25;
+        smoothedCursorPos.y += (rawTargetY - smoothedCursorPos.y) * 0.25;
 
         handCursor.position.copy(smoothedCursorPos);
 
-        // Check for desensitized pinch gesture
         if (checkPinchState(hand)) {
             const now = Date.now();
-            if (now - lastSpawnTime > 600) { // Enforce a clean 600ms cooldown
+            if (now - lastSpawnTime > 600) {
                 spawnShape(smoothedCursorPos.x, smoothedCursorPos.y);
                 lastSpawnTime = now;
             }
@@ -175,26 +238,14 @@ function processFrame() {
     renderer.render(scene, camera3D);
 }
 
-// MediaPipe Setup with Higher Confidence Gates to Filter Noise
 const pose = new Pose({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}` });
-pose.setOptions({ 
-    modelComplexity: 1, 
-    smoothLandmarks: true, 
-    minDetectionConfidence: 0.8, // Raised to ignore blurry frames
-    minTrackingConfidence: 0.8 
-});
+pose.setOptions({ modelComplexity: 1, smoothLandmarks: true, minDetectionConfidence: 0.8, minTrackingConfidence: 0.8 });
 pose.onResults(results => { latestPose = results; processFrame(); });
 
 const hands = new Hands({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}` });
-hands.setOptions({ 
-    maxNumHands: 1, 
-    modelComplexity: 1, 
-    minDetectionConfidence: 0.85, // Highly strict hand threshold to avoid false toggles
-    minTrackingConfidence: 0.85 
-});
+hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.85, minTrackingConfidence: 0.85 });
 hands.onResults(results => { latestHands = results; });
 
-// Camera Loop
 const camera = new Camera(videoElement, {
     onFrame: async () => {
         await pose.send({ image: videoElement });
