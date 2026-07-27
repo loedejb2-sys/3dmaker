@@ -6,7 +6,7 @@ const shapeIndicator = document.getElementById('shape-indicator');
 
 let systemActive = false;
 let thumbsUpFrames = 0;
-const REQUIRED_CONFIRMATION_FRAMES = 15;
+const REQUIRED_CONFIRMATION_FRAMES = 25; // Increased buffer so it's less sensitive to accidental gestures
 
 let latestPose = null;
 let latestHands = null;
@@ -20,24 +20,24 @@ const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 document.getElementById('three-container').appendChild(renderer.domElement);
 
-// Add lighting for 3D shapes
 const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
 scene.add(ambientLight);
 const pointLight = new THREE.PointLight(0xffffff, 1.5);
 pointLight.position.set(5, 5, 5);
 scene.add(pointLight);
 
-// Array to store spawned 3D shapes
 const spawnedObjects = [];
 const shapesArray = ['CUBE', 'SPHERE', 'TORUS', 'CONE'];
 let currentShapeIndex = 0;
 let lastSpawnTime = 0;
 
-// Cursor 3D Mesh to follow hand position
+// Cursor 3D Mesh with position smoothing (LERP)
 const cursorGeometry = new THREE.SphereGeometry(0.1, 16, 16);
 const cursorMaterial = new THREE.MeshStandardMaterial({ color: 0xff007f, emissive: 0xff007f });
 const handCursor = new THREE.Mesh(cursorGeometry, cursorMaterial);
 scene.add(handCursor);
+
+let smoothedCursorPos = new THREE.Vector3(0, 0, 0);
 
 function resizeCanvas() {
     canvasElement.width = window.innerWidth;
@@ -49,12 +49,16 @@ function resizeCanvas() {
 window.addEventListener('resize', resizeCanvas);
 resizeCanvas();
 
-// Strict 21-point Hand Thumbs-Up Algorithm
+// Strict 21-point Hand Thumbs-Up Algorithm with stricter angular bounds
 function isStrictThumbsUp(landmarks) {
+    const wrist = landmarks[0];
     const thumbTip = landmarks[4];
     const indexMcp = landmarks[5];
-    const thumbExtended = thumbTip.y < indexMcp.y;
 
+    // Thumb must be pointed up and significantly separated from the palm
+    const thumbExtended = thumbTip.y < indexMcp.y - 0.05;
+
+    // All fingers must be fully curled (tips must be lower/further down than joint centers)
     const indexFolded = landmarks[8].y > landmarks[6].y;
     const middleFolded = landmarks[12].y > landmarks[10].y;
     const ringFolded = landmarks[16].y > landmarks[14].y;
@@ -63,14 +67,24 @@ function isStrictThumbsUp(landmarks) {
     return thumbExtended && indexFolded && middleFolded && ringFolded && pinkyFolded;
 }
 
-// Detect pinch gesture (Distance between Index tip [8] and Thumb tip [4])
-function isPinched(landmarks) {
+// Stricter, desensitized pinch check with a distinct release threshold
+let isPinching = false;
+function checkPinchState(landmarks) {
     const tipIndex = landmarks[8];
     const tipThumb = landmarks[4];
     const dx = tipIndex.x - tipThumb.x;
     const dy = tipIndex.y - tipThumb.y;
     const distance = Math.sqrt(dx * dx + dy * dy);
-    return distance < 0.05; // Threshold for pinch contact
+
+    // Hysteresis: Require a tight pinch to trigger (0.04), but a wider gap to un-pinch (0.07) 
+    // to prevent rapid-fire accidental double-spawns from slight finger trembling.
+    if (!isPinching && distance < 0.04) {
+        isPinching = true;
+        return true;
+    } else if (isPinching && distance > 0.07) {
+        isPinching = false;
+    }
+    return false;
 }
 
 function spawnShape(x, y) {
@@ -82,7 +96,6 @@ function spawnShape(x, y) {
     else if (shapeType === 'TORUS') geometry = new THREE.TorusGeometry(0.5, 0.2, 16, 100);
     else if (shapeType === 'CONE') geometry = new THREE.ConeGeometry(0.5, 1, 32);
 
-    // Neon vibrant materials
     const material = new THREE.MeshStandardMaterial({
         color: Math.random() * 0xffffff,
         roughness: 0.3,
@@ -94,7 +107,6 @@ function spawnShape(x, y) {
     scene.add(mesh);
     spawnedObjects.push(mesh);
 
-    // Cycle through shapes for next spawn
     currentShapeIndex = (currentShapeIndex + 1) % shapesArray.length;
     shapeIndicator.innerText = `Active Shape: ${shapesArray[currentShapeIndex]}`;
 }
@@ -107,7 +119,7 @@ function processFrame() {
         canvasCtx.drawImage(latestPose.image, 0, 0, canvasElement.width, canvasElement.height);
     }
 
-    // 1. Activation Gate via Thumbs Up
+    // 1. Activation Gate via Thumbs Up (Desensitized with frame buffer)
     if (!systemActive) {
         let detectedThumbsUp = false;
         if (latestHands && latestHands.multiHandLandmarks) {
@@ -121,30 +133,33 @@ function processFrame() {
             statusElement.innerText = `Unlocking Workspace... (${Math.round((thumbsUpFrames / REQUIRED_CONFIRMATION_FRAMES) * 100)}%)`;
             if (thumbsUpFrames >= REQUIRED_CONFIRMATION_FRAMES) {
                 systemActive = true;
-                statusElement.innerText = "Workspace Unlocked • Pinch fingers to spawn 3D shapes";
+                statusElement.innerText = "Workspace Unlocked • Pinch index & thumb to spawn shapes";
             }
         } else {
-            thumbsUpFrames = Math.max(0, thumbsUpFrames - 1);
-            statusElement.innerText = "LOCKED: Hold a strict Thumbs Up to camera to start";
+            thumbsUpFrames = Math.max(0, thumbsUpFrames - 2); // Decays faster if gesture drops
+            statusElement.innerText = "LOCKED: Hold a strict Thumbs Up steadily to unlock";
         }
     }
 
-    // 2. Interactive 3D Maker Logic (Active Mode)
+    // 2. Interactive 3D Maker Logic with Position Smoothing (LERP)
     if (systemActive && latestHands && latestHands.multiHandLandmarks && latestHands.multiHandLandmarks.length > 0) {
         const hand = latestHands.multiHandLandmarks[0];
-        const indexTip = hand[8]; // Index finger tracking point
+        const indexTip = hand[8];
 
-        // Map camera coordinates (0 to 1) to Three.js 3D viewport space
-        const targetX = -(indexTip.x - 0.5) * 8;
-        const targetY = -(indexTip.y - 0.5) * 6;
+        const rawTargetX = -(indexTip.x - 0.5) * 8;
+        const rawTargetY = -(indexTip.y - 0.5) * 6;
 
-        handCursor.position.set(targetX, targetY, 0);
+        // Linear interpolation (LERP factor 0.2) removes micro-jitters from hand shaking
+        smoothedCursorPos.x += (rawTargetX - smoothedCursorPos.x) * 0.2;
+        smoothedCursorPos.y += (rawTargetY - smoothedCursorPos.y) * 0.2;
 
-        // Check for pinch gesture to spawn object with cooldown
-        if (isPinched(hand)) {
+        handCursor.position.copy(smoothedCursorPos);
+
+        // Check for desensitized pinch gesture
+        if (checkPinchState(hand)) {
             const now = Date.now();
-            if (now - lastSpawnTime > 400) { // 400ms cooldown between spawns
-                spawnShape(targetX, targetY);
+            if (now - lastSpawnTime > 600) { // Enforce a clean 600ms cooldown
+                spawnShape(smoothedCursorPos.x, smoothedCursorPos.y);
                 lastSpawnTime = now;
             }
         }
@@ -152,7 +167,6 @@ function processFrame() {
 
     canvasCtx.restore();
 
-    // Rotate all spawned 3D objects for dynamic motion
     spawnedObjects.forEach(obj => {
         obj.rotation.x += 0.01;
         obj.rotation.y += 0.015;
@@ -161,13 +175,23 @@ function processFrame() {
     renderer.render(scene, camera3D);
 }
 
-// MediaPipe Setup
+// MediaPipe Setup with Higher Confidence Gates to Filter Noise
 const pose = new Pose({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}` });
-pose.setOptions({ modelComplexity: 1, smoothLandmarks: true, minDetectionConfidence: 0.7, minTrackingConfidence: 0.7 });
+pose.setOptions({ 
+    modelComplexity: 1, 
+    smoothLandmarks: true, 
+    minDetectionConfidence: 0.8, // Raised to ignore blurry frames
+    minTrackingConfidence: 0.8 
+});
 pose.onResults(results => { latestPose = results; processFrame(); });
 
 const hands = new Hands({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}` });
-hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.75, minTrackingConfidence: 0.75 });
+hands.setOptions({ 
+    maxNumHands: 1, 
+    modelComplexity: 1, 
+    minDetectionConfidence: 0.85, // Highly strict hand threshold to avoid false toggles
+    minTrackingConfidence: 0.85 
+});
 hands.onResults(results => { latestHands = results; });
 
 // Camera Loop
