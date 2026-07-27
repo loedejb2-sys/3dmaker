@@ -30,14 +30,16 @@ const spawnedObjects = [];
 const shapesArray = ['CUBE', 'SPHERE', 'TORUS', 'CONE'];
 let currentShapeIndex = 0;
 let lastSpawnTime = 0;
+let lastScrollTime = 0;
 
-// Cursor matching left pointer finger tip in true 3D camera space
+// Cursor matching left pointer finger tip in true 3D space
 const cursorGeometry = new THREE.SphereGeometry(0.08, 16, 16);
 const cursorMaterial = new THREE.MeshStandardMaterial({ color: 0xff007f, emissive: 0xff007f });
 const pointerCursor = new THREE.Mesh(cursorGeometry, cursorMaterial);
 scene.add(pointerCursor);
 
 let smoothedCursorPos = new THREE.Vector3(0, 0, 0);
+let grabbedObject = null; // Object currently held/grabbed by right hand
 
 function resizeCanvas() {
     canvasElement.width = window.innerWidth;
@@ -80,12 +82,20 @@ function isStrictThumbsUp(landmarks) {
     return thumbExtended && indexFolded && middleFolded && ringFolded && pinkyFolded;
 }
 
-function checkPinchState(landmarks) {
+// Check index + thumb pinch (Right hand action trigger / grab)
+function checkIndexPinch(landmarks) {
     const dx = landmarks[8].x - landmarks[4].x;
     const dy = landmarks[8].y - landmarks[4].y;
     const dz = landmarks[8].z - landmarks[4].z;
-    const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
-    return distance < 0.04;
+    return Math.sqrt(dx * dx + dy * dy + dz * dz) < 0.04;
+}
+
+// Check pinky + thumb pinch (Left hand scroll trigger)
+function checkPinkyPinch(landmarks) {
+    const dx = landmarks[20].x - landmarks[4].x;
+    const dy = landmarks[20].y - landmarks[4].y;
+    const dz = landmarks[20].z - landmarks[4].z;
+    return Math.sqrt(dx * dx + dy * dy + dz * dz) < 0.04;
 }
 
 function spawnShape(position) {
@@ -107,9 +117,7 @@ function spawnShape(position) {
     mesh.position.copy(position);
     scene.add(mesh);
     spawnedObjects.push(mesh);
-
-    currentShapeIndex = (currentShapeIndex + 1) % shapesArray.length;
-    shapeIndicator.innerText = `Active Shape: ${shapesArray[currentShapeIndex]}`;
+    return mesh;
 }
 
 function processFrame() {
@@ -133,7 +141,7 @@ function processFrame() {
             statusElement.innerText = `Unlocking Workspace... (${Math.round((thumbsUpFrames / REQUIRED_CONFIRMATION_FRAMES) * 100)}%)`;
             if (thumbsUpFrames >= REQUIRED_CONFIRMATION_FRAMES) {
                 systemActive = true;
-                statusElement.innerText = "Workspace Unlocked • Left Hand points destination, Right Hand pinches to spawn";
+                statusElement.innerText = "Workspace Unlocked • Left Pinky+Thumb scrolls shapes • Right Pinch grabs/spawns";
             }
         } else {
             thumbsUpFrames = Math.max(0, thumbsUpFrames - 2);
@@ -160,7 +168,7 @@ function processFrame() {
         }
     }
 
-    // Render 100-Point Dual Hand Skeletons & Split Controls
+    // Render 100-Point Dual Hand Skeletons & Interaction Logic
     if (latestHands && latestHands.multiHandLandmarks && latestHands.multiHandWorldLandmarks) {
         for (let i = 0; i < latestHands.multiHandLandmarks.length; i++) {
             const handLandmarks = latestHands.multiHandLandmarks[i];
@@ -191,19 +199,20 @@ function processFrame() {
 
         if (systemActive) {
             let leftWorldTip = null;
+            let leftScreenHand = null;
             let rightScreenHand = null;
 
-            // Identify Left vs Right hand based on MediaPipe classification metadata
             for (let i = 0; i < latestHands.multiHandedness.length; i++) {
                 const label = latestHands.multiHandedness[i].label; // "Left" or "Right"
                 if (label === "Left") {
-                    leftWorldTip = latestHands.multiHandWorldLandmarks[i][8]; // Left pointer tip axis
+                    leftWorldTip = latestHands.multiHandWorldLandmarks[i][8]; // Index tip world axis
+                    leftScreenHand = latestHands.multiHandLandmarks[i];
                 } else if (label === "Right") {
-                    rightScreenHand = latestHands.multiHandLandmarks[i]; // Right hand for pinch trigger
+                    rightScreenHand = latestHands.multiHandLandmarks[i];
                 }
             }
 
-            // Update 3D Cursor position using Left Hand pointer finger physical axis
+            // 1. Update Left Hand Pointer Cursor Position
             if (leftWorldTip) {
                 const targetX = -leftWorldTip.x * 4.0;
                 const targetY = leftWorldTip.y * 4.0;
@@ -215,16 +224,51 @@ function processFrame() {
 
                 pointerCursor.position.copy(smoothedCursorPos);
                 pointerCursor.visible = true;
+
+                // If an object is currently grabbed, move it with the left hand pointer
+                if (grabbedObject) {
+                    grabbedObject.position.copy(smoothedCursorPos);
+                }
             } else {
                 pointerCursor.visible = false;
             }
 
-            // Trigger shape creation when Right Hand performs a pinch gesture
-            if (rightScreenHand && checkPinchState(rightScreenHand) && leftWorldTip) {
+            // 2. Left Hand Pinky + Thumb Scroll Gesture
+            if (leftScreenHand && checkPinkyPinch(leftScreenHand)) {
                 const now = Date.now();
-                if (now - lastSpawnTime > 600) {
-                    spawnShape(smoothedCursorPos);
-                    lastSpawnTime = now;
+                if (now - lastScrollTime > 500) { // 500ms cooldown for smooth scrolling
+                    currentShapeIndex = (currentShapeIndex + 1) % shapesArray.length;
+                    shapeIndicator.innerText = `Active Shape: ${shapesArray[currentShapeIndex]}`;
+                    lastScrollTime = now;
+                }
+            }
+
+            // 3. Right Hand Index + Thumb Pinch (Grab / Spawn Action)
+            if (rightScreenHand && leftWorldTip) {
+                const isRightPinching = checkIndexPinch(rightScreenHand);
+                const now = Date.now();
+
+                if (isRightPinching) {
+                    if (!grabbedObject && now - lastSpawnTime > 600) {
+                        // Check if existing object is close to left hand pointer to grab it, otherwise spawn a new one
+                        let targetObj = null;
+                        for (let obj of spawnedObjects) {
+                            if (obj.position.distanceTo(smoothedCursorPos) < 1.0) {
+                                targetObj = obj;
+                                break;
+                            }
+                        }
+
+                        if (targetObj) {
+                            grabbedObject = targetObj; // Grab existing object
+                        } else {
+                            grabbedObject = spawnShape(smoothedCursorPos); // Spawn new object at left finger tip
+                        }
+                        lastSpawnTime = now;
+                    }
+                } else {
+                    // Release grabbed object when right hand unpinches
+                    grabbedObject = null;
                 }
             }
         }
@@ -233,8 +277,10 @@ function processFrame() {
     canvasCtx.restore();
 
     spawnedObjects.forEach(obj => {
-        obj.rotation.x += 0.01;
-        obj.rotation.y += 0.015;
+        if (obj !== grabbedObject) {
+            obj.rotation.x += 0.01;
+            obj.rotation.y += 0.015;
+        }
     });
 
     renderer.render(scene, camera3D);
