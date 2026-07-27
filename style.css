@@ -1,0 +1,108 @@
+* {
+    box-sizing: border-box;
+}
+
+body, html {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background-color: #050505;
+}
+
+.video-container {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    z-index: 1;
+}
+
+.input_video {
+    display: none;
+}
+
+canvas.output_canvas {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    transform: scaleX(-1);
+}
+
+#three-container {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    z-index: 2;
+    pointer-events: none; /* Allows UI interaction */
+}
+
+.overlay-ui {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 10;
+    pointer-events: none;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    align-items: center;
+    padding: 35px;
+}
+
+.header-overlay h1 {
+    margin: 0;
+    color: rgba(255, 255, 255, 0.85);
+    font-size: 1.1rem;
+    letter-spacing: 4px;
+    font-weight: 700;
+    text-shadow: 0 2px 12px rgba(0, 0, 0, 0.9);
+}
+
+.info-overlay {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-shadow: 0 4px 25px rgba(0, 0, 0, 0.95);
+}
+
+#shape-indicator {
+    font-size: 2.5rem;
+    font-weight: 800;
+    color: #00f2fe;
+    letter-spacing: 2px;
+    margin-bottom: 5px;
+}
+
+.info-overlay .label {
+    font-size: 0.85rem;
+    letter-spacing: 4px;
+    color: rgba(255, 255, 255, 0.6);
+    font-weight: 600;
+}
+
+.status-overlay {
+    background: rgba(10, 10, 10, 0.55);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    padding: 12px 28px;
+    border-radius: 40px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+}
+
+#status {
+    margin: 0;
+    color: #f0f6fc;
+    font-size: 0.95rem;
+    letter-spacing: 0.5px;
+    text-align: center;
+    font-weight: 500;
+}
