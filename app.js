@@ -11,7 +11,7 @@ const REQUIRED_CONFIRMATION_FRAMES = 25;
 let latestPose = null;
 let latestHands = null;
 
-// Three.js Setup with True Perspective 3D Scene mapping
+// Three.js Setup
 const scene = new THREE.Scene();
 const camera3D = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
 camera3D.position.z = 5;
@@ -31,7 +31,7 @@ const shapesArray = ['CUBE', 'SPHERE', 'TORUS', 'CONE'];
 let currentShapeIndex = 0;
 let lastSpawnTime = 0;
 
-// Cursor tracking the 3D axis vector of the pointer fingertip
+// Cursor matching left pointer finger tip in true 3D camera space
 const cursorGeometry = new THREE.SphereGeometry(0.08, 16, 16);
 const cursorMaterial = new THREE.MeshStandardMaterial({ color: 0xff007f, emissive: 0xff007f });
 const pointerCursor = new THREE.Mesh(cursorGeometry, cursorMaterial);
@@ -58,7 +58,6 @@ const FULL_BODY_CONNECTIONS = [
     [0, 1], [1, 2], [2, 3], [3, 7], [0, 4], [4, 5], [5, 6], [6, 8], [9, 10]
 ];
 
-// Expanded 50-Point Dual Hand Connections (25 points per hand topology)
 const HAND_CONNECTIONS = [
     [0,1],[1,2],[2,3],[3,4],           
     [0,5],[5,6],[6,7],[7,8],           
@@ -81,20 +80,12 @@ function isStrictThumbsUp(landmarks) {
     return thumbExtended && indexFolded && middleFolded && ringFolded && pinkyFolded;
 }
 
-let isPinching = false;
 function checkPinchState(landmarks) {
     const dx = landmarks[8].x - landmarks[4].x;
     const dy = landmarks[8].y - landmarks[4].y;
     const dz = landmarks[8].z - landmarks[4].z;
     const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
-
-    if (!isPinching && distance < 0.04) {
-        isPinching = true;
-        return true;
-    } else if (isPinching && distance > 0.07) {
-        isPinching = false;
-    }
-    return false;
+    return distance < 0.04;
 }
 
 function spawnShape(position) {
@@ -142,7 +133,7 @@ function processFrame() {
             statusElement.innerText = `Unlocking Workspace... (${Math.round((thumbsUpFrames / REQUIRED_CONFIRMATION_FRAMES) * 100)}%)`;
             if (thumbsUpFrames >= REQUIRED_CONFIRMATION_FRAMES) {
                 systemActive = true;
-                statusElement.innerText = "Workspace Unlocked • Pinch physical finger axes to spawn objects";
+                statusElement.innerText = "Workspace Unlocked • Left Hand points destination, Right Hand pinches to spawn";
             }
         } else {
             thumbsUpFrames = Math.max(0, thumbsUpFrames - 2);
@@ -169,9 +160,11 @@ function processFrame() {
         }
     }
 
-    // Render 100-Point Dual Hand Skeletons (50 points per hand using world coordinate vectors)
-    if (latestHands && latestHands.multiHandLandmarks) {
-        for (const handLandmarks of latestHands.multiHandLandmarks) {
+    // Render 100-Point Dual Hand Skeletons & Split Controls
+    if (latestHands && latestHands.multiHandLandmarks && latestHands.multiHandWorldLandmarks) {
+        for (let i = 0; i < latestHands.multiHandLandmarks.length; i++) {
+            const handLandmarks = latestHands.multiHandLandmarks[i];
+
             canvasCtx.strokeStyle = systemActive ? 'rgba(50, 215, 75, 0.8)' : 'rgba(243, 156, 18, 0.4)';
             canvasCtx.lineWidth = 2;
 
@@ -196,26 +189,38 @@ function processFrame() {
             }
         }
 
-        // Anchor 3D placement to the physical 3D world axes vector of the pointer fingertip
-        if (systemActive && latestHands.multiHandWorldLandmarks && latestHands.multiHandWorldLandmarks.length > 0) {
-            const primaryWorldHand = latestHands.multiHandWorldLandmarks[0];
-            const primaryScreenHand = latestHands.multiHandLandmarks[0]; // For pinch check
-            
-            // Landmark 8 is the index finger tip metric world axis position
-            const fingerTipWorld = primaryWorldHand[8]; 
+        if (systemActive) {
+            let leftWorldTip = null;
+            let rightScreenHand = null;
 
-            // Map metric world coordinates directly into Three.js 3D space scale (flipping X to match mirror view)
-            const targetX = -fingerTipWorld.x * 4.0;
-            const targetY = fingerTipWorld.y * 4.0;
-            const targetZ = -fingerTipWorld.z * 4.0;
+            // Identify Left vs Right hand based on MediaPipe classification metadata
+            for (let i = 0; i < latestHands.multiHandedness.length; i++) {
+                const label = latestHands.multiHandedness[i].label; // "Left" or "Right"
+                if (label === "Left") {
+                    leftWorldTip = latestHands.multiHandWorldLandmarks[i][8]; // Left pointer tip axis
+                } else if (label === "Right") {
+                    rightScreenHand = latestHands.multiHandLandmarks[i]; // Right hand for pinch trigger
+                }
+            }
 
-            smoothedCursorPos.x += (targetX - smoothedCursorPos.x) * 0.3;
-            smoothedCursorPos.y += (targetY - smoothedCursorPos.y) * 0.3;
-            smoothedCursorPos.z += (targetZ - smoothedCursorPos.z) * 0.3;
+            // Update 3D Cursor position using Left Hand pointer finger physical axis
+            if (leftWorldTip) {
+                const targetX = -leftWorldTip.x * 4.0;
+                const targetY = leftWorldTip.y * 4.0;
+                const targetZ = -leftWorldTip.z * 4.0;
 
-            pointerCursor.position.copy(smoothedCursorPos);
+                smoothedCursorPos.x += (targetX - smoothedCursorPos.x) * 0.3;
+                smoothedCursorPos.y += (targetY - smoothedCursorPos.y) * 0.3;
+                smoothedCursorPos.z += (targetZ - smoothedCursorPos.z) * 0.3;
 
-            if (checkPinchState(primaryScreenHand)) {
+                pointerCursor.position.copy(smoothedCursorPos);
+                pointerCursor.visible = true;
+            } else {
+                pointerCursor.visible = false;
+            }
+
+            // Trigger shape creation when Right Hand performs a pinch gesture
+            if (rightScreenHand && checkPinchState(rightScreenHand) && leftWorldTip) {
                 const now = Date.now();
                 if (now - lastSpawnTime > 600) {
                     spawnShape(smoothedCursorPos);
@@ -241,7 +246,7 @@ pose.onResults(results => { latestPose = results; processFrame(); });
 
 const hands = new Hands({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}` });
 hands.setOptions({ 
-    maxNumHands: 2, // Tracks 2 hands simultaneously for 100 total points
+    maxNumHands: 2, 
     modelComplexity: 1, 
     minDetectionConfidence: 0.85, 
     minTrackingConfidence: 0.85 
