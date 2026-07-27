@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 3D Object Maker</title>
+    <link rel="stylesheet" href="style.css">
+    
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+    <div class="video-container">
+        <video class="input_video" autoplay muted playsinline></video>
+        <canvas class="output_canvas"></canvas>
+    </div>
+
+    <div id="three-container"></div>
+
+    <div class="overlay-ui">
+        <div class="header-overlay">
+            <h1>AI 3D OBJECT MAKER</h1>
+        </div>
+        
+        <div class="info-overlay">
+            <span id="shape-indicator">Active Shape: CUBE</span>
+            <span class="label">PINCH FINGERS TO SPAWN</span>
+        </div>
+
+        <div class="status-overlay">
+            <p id="status">Hold a strict Thumbs Up to unlock canvas...</p>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
