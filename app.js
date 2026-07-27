@@ -31,8 +31,8 @@ const shapesArray = ['CUBE', 'SPHERE', 'TORUS', 'CONE'];
 let currentShapeIndex = 0;
 let lastSpawnTime = 0;
 
-// Cursor tracking the precise pointer fingertip
-const cursorGeometry = new THREE.SphereGeometry(0.1, 16, 16);
+// Cursor matching pointer finger tip in true 3D camera space
+const cursorGeometry = new THREE.SphereGeometry(0.08, 16, 16);
 const cursorMaterial = new THREE.MeshStandardMaterial({ color: 0xff007f, emissive: 0xff007f });
 const pointerCursor = new THREE.Mesh(cursorGeometry, cursorMaterial);
 scene.add(pointerCursor);
@@ -58,14 +58,13 @@ const FULL_BODY_CONNECTIONS = [
     [0, 1], [1, 2], [2, 3], [3, 7], [0, 4], [4, 5], [5, 6], [6, 8], [9, 10]
 ];
 
-// High-density 25-point per hand connections (Total 50 points across dual hands)
 const HAND_CONNECTIONS = [
-    [0,1],[1,2],[2,3],[3,4],           // Thumb
-    [0,5],[5,6],[6,7],[7,8],           // Index
-    [5,9],[9,10],[10,11],[11,12],      // Middle
-    [9,13],[13,14],[14,15],[15,16],    // Ring
-    [13,17],[17,18],[18,19],[19,20],   // Pinky
-    [0,17],[17,21],[21,22],[22,23],[23,24] // Expanded palm mesh nodes (bringing total to 25 structural points per hand)
+    [0,1],[1,2],[2,3],[3,4],           
+    [0,5],[5,6],[6,7],[7,8],           
+    [5,9],[9,10],[10,11],[11,12],      
+    [9,13],[13,14],[14,15],[15,16],    
+    [13,17],[17,18],[18,19],[19,20],   
+    [0,17],[17,21],[21,22],[22,23],[23,24] 
 ];
 
 function isStrictThumbsUp(landmarks) {
@@ -85,18 +84,19 @@ let isPinching = false;
 function checkPinchState(landmarks) {
     const dx = landmarks[8].x - landmarks[4].x;
     const dy = landmarks[8].y - landmarks[4].y;
-    const distance = Math.sqrt(dx * dx + dy * dy);
+    const dz = landmarks[8].z - landmarks[4].z;
+    const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
 
-    if (!isPinching && distance < 0.04) {
+    if (!isPinching && distance < 0.06) {
         isPinching = true;
         return true;
-    } else if (isPinching && distance > 0.07) {
+    } else if (isPinching && distance > 0.10) {
         isPinching = false;
     }
     return false;
 }
 
-function spawnShape(x, y) {
+function spawnShape(position) {
     let geometry;
     const shapeType = shapesArray[currentShapeIndex];
 
@@ -112,7 +112,8 @@ function spawnShape(x, y) {
     });
 
     const mesh = new THREE.Mesh(geometry, material);
-    mesh.position.set(x, y, 0);
+    // Directly copy the true 3D camera-space vector where the finger is pointing
+    mesh.position.copy(position);
     scene.add(mesh);
     spawnedObjects.push(mesh);
 
@@ -128,7 +129,6 @@ function processFrame() {
         canvasCtx.drawImage(latestPose.image, 0, 0, canvasElement.width, canvasElement.height);
     }
 
-    // 1. Activation Gate via Thumbs Up
     if (!systemActive) {
         let detectedThumbsUp = false;
         if (latestHands && latestHands.multiHandLandmarks) {
@@ -142,7 +142,7 @@ function processFrame() {
             statusElement.innerText = `Unlocking Workspace... (${Math.round((thumbsUpFrames / REQUIRED_CONFIRMATION_FRAMES) * 100)}%)`;
             if (thumbsUpFrames >= REQUIRED_CONFIRMATION_FRAMES) {
                 systemActive = true;
-                statusElement.innerText = "Workspace Unlocked • Pinch pointer fingertip & thumb to spawn";
+                statusElement.innerText = "Workspace Unlocked • Pinch pointer fingertip & thumb in 3D space to spawn";
             }
         } else {
             thumbsUpFrames = Math.max(0, thumbsUpFrames - 2);
@@ -150,10 +150,9 @@ function processFrame() {
         }
     }
 
-    // 2. Render Full Body Anatomical Skeleton
+    // Render Full Body Anatomical Skeleton
     if (latestPose && latestPose.poseLandmarks) {
         const landmarks = latestPose.poseLandmarks;
-
         canvasCtx.strokeStyle = systemActive ? 'rgba(0, 242, 254, 0.6)' : 'rgba(255, 255, 255, 0.15)';
         canvasCtx.lineWidth = 2;
         canvasCtx.lineCap = 'round';
@@ -170,15 +169,13 @@ function processFrame() {
         }
     }
 
-    // 3. Render High-Density Dual-Hand Skeletons (50 Total Points) and Precise Pointer Tip Tracking
+    // Render 50-Point Hand Skeletons & Map Pointer Fingertip to True 3D Camera Space
     if (latestHands && latestHands.multiHandLandmarks) {
         for (const handLandmarks of latestHands.multiHandLandmarks) {
-            // Draw 25 structural points per hand
             canvasCtx.strokeStyle = systemActive ? 'rgba(50, 215, 75, 0.8)' : 'rgba(243, 156, 18, 0.4)';
             canvasCtx.lineWidth = 2;
 
             for (let [u, v] of HAND_CONNECTIONS) {
-                // Ensure array index bounds safety for expanded palm points
                 if (handLandmarks[u] && handLandmarks[v]) {
                     const p1 = handLandmarks[u];
                     const p2 = handLandmarks[v];
@@ -189,7 +186,6 @@ function processFrame() {
                 }
             }
 
-            // Draw individual joint nodes for all hand points
             for (let lm of handLandmarks) {
                 if (lm) {
                     canvasCtx.fillStyle = '#ff007f';
@@ -200,25 +196,26 @@ function processFrame() {
             }
         }
 
-        // Anchor 3D placement strictly to the primary pointer finger tip (Landmark 8)
         if (systemActive && latestHands.multiHandLandmarks.length > 0) {
             const primaryHand = latestHands.multiHandLandmarks[0];
             const pointerTip = primaryHand[8]; // Index finger tip
 
-            // Map canvas screen space precisely to 3D world space
-            const rawTargetX = -(pointerTip.x - 0.5) * 8;
-            const rawTargetY = -(pointerTip.y - 0.5) * 6;
+            // Map MediaPipe's 3D spatial coordinates (X, Y, and Z depth relative to camera frame)
+            // Flipping X because the camera view is mirrored via CSS scaleX(-1)
+            const targetX = -(pointerTip.x - 0.5) * 8.5;
+            const targetY = -(pointerTip.y - 0.5) * 6.5;
+            const targetZ = -pointerTip.z * 5.0; // Incorporates actual hand depth data from camera view
 
-            smoothedCursorPos.x += (rawTargetX - smoothedCursorPos.x) * 0.3;
-            smoothedCursorPos.y += (rawTargetY - smoothedCursorPos.y) * 0.3;
+            smoothedCursorPos.x += (targetX - smoothedCursorPos.x) * 0.35;
+            smoothedCursorPos.y += (targetY - smoothedCursorPos.y) * 0.35;
+            smoothedCursorPos.z += (targetZ - smoothedCursorPos.z) * 0.35;
 
             pointerCursor.position.copy(smoothedCursorPos);
 
-            // Trigger shape creation when pointer tip pinches with thumb tip
             if (checkPinchState(primaryHand)) {
                 const now = Date.now();
                 if (now - lastSpawnTime > 600) {
-                    spawnShape(smoothedCursorPos.x, smoothedCursorPos.y);
+                    spawnShape(smoothedCursorPos);
                     lastSpawnTime = now;
                 }
             }
@@ -235,14 +232,13 @@ function processFrame() {
     renderer.render(scene, camera3D);
 }
 
-// MediaPipe Configurations for Dual-Hand High-Density Tracking
 const pose = new Pose({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}` });
 pose.setOptions({ modelComplexity: 1, smoothLandmarks: true, minDetectionConfidence: 0.8, minTrackingConfidence: 0.8 });
 pose.onResults(results => { latestPose = results; processFrame(); });
 
 const hands = new Hands({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}` });
 hands.setOptions({ 
-    maxNumHands: 2, // Tracks both hands simultaneously (50 total nodes)
+    maxNumHands: 2, 
     modelComplexity: 1, 
     minDetectionConfidence: 0.85, 
     minTrackingConfidence: 0.85 
