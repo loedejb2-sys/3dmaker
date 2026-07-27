@@ -39,7 +39,7 @@ const pointerCursor = new THREE.Mesh(cursorGeometry, cursorMaterial);
 scene.add(pointerCursor);
 
 let smoothedCursorPos = new THREE.Vector3(0, 0, 0);
-let grabbedObject = null; // Object currently held/grabbed by right hand
+let grabbedObject = null;
 
 function resizeCanvas() {
     canvasElement.width = window.innerWidth;
@@ -82,7 +82,7 @@ function isStrictThumbsUp(landmarks) {
     return thumbExtended && indexFolded && middleFolded && ringFolded && pinkyFolded;
 }
 
-// Check index + thumb pinch (Right hand action trigger / grab)
+// Check index + thumb pinch (Left hand spawn trigger)
 function checkIndexPinch(landmarks) {
     const dx = landmarks[8].x - landmarks[4].x;
     const dy = landmarks[8].y - landmarks[4].y;
@@ -141,7 +141,7 @@ function processFrame() {
             statusElement.innerText = `Unlocking Workspace... (${Math.round((thumbsUpFrames / REQUIRED_CONFIRMATION_FRAMES) * 100)}%)`;
             if (thumbsUpFrames >= REQUIRED_CONFIRMATION_FRAMES) {
                 systemActive = true;
-                statusElement.innerText = "Workspace Unlocked • Left Pinky+Thumb scrolls shapes • Right Pinch grabs/spawns";
+                statusElement.innerText = "Workspace Unlocked • Left Index+Thumb spawns • Left Pinky+Thumb scrolls • Right Pinch grabs";
             }
         } else {
             thumbsUpFrames = Math.max(0, thumbsUpFrames - 2);
@@ -205,7 +205,7 @@ function processFrame() {
             for (let i = 0; i < latestHands.multiHandedness.length; i++) {
                 const label = latestHands.multiHandedness[i].label; // "Left" or "Right"
                 if (label === "Left") {
-                    leftWorldTip = latestHands.multiHandWorldLandmarks[i][8]; // Index tip world axis
+                    leftWorldTip = latestHands.multiHandWorldLandmarks[i][8];
                     leftScreenHand = latestHands.multiHandLandmarks[i];
                 } else if (label === "Right") {
                     rightScreenHand = latestHands.multiHandLandmarks[i];
@@ -225,7 +225,6 @@ function processFrame() {
                 pointerCursor.position.copy(smoothedCursorPos);
                 pointerCursor.visible = true;
 
-                // If an object is currently grabbed, move it with the left hand pointer
                 if (grabbedObject) {
                     grabbedObject.position.copy(smoothedCursorPos);
                 }
@@ -236,21 +235,29 @@ function processFrame() {
             // 2. Left Hand Pinky + Thumb Scroll Gesture
             if (leftScreenHand && checkPinkyPinch(leftScreenHand)) {
                 const now = Date.now();
-                if (now - lastScrollTime > 500) { // 500ms cooldown for smooth scrolling
+                if (now - lastScrollTime > 500) {
                     currentShapeIndex = (currentShapeIndex + 1) % shapesArray.length;
                     shapeIndicator.innerText = `Active Shape: ${shapesArray[currentShapeIndex]}`;
                     lastScrollTime = now;
                 }
             }
 
-            // 3. Right Hand Index + Thumb Pinch (Grab / Spawn Action)
-            if (rightScreenHand && leftWorldTip) {
+            // 3. Left Hand Index + Thumb Pinch (Spawn Action)
+            if (leftScreenHand && checkIndexPinch(leftScreenHand)) {
+                const now = Date.now();
+                if (now - lastSpawnTime > 600) {
+                    spawnShape(smoothedCursorPos);
+                    lastSpawnTime = now;
+                }
+            }
+
+            // 4. Right Hand Index + Thumb Pinch (Grab / Move Action)
+            if (rightScreenHand) {
                 const isRightPinching = checkIndexPinch(rightScreenHand);
                 const now = Date.now();
 
                 if (isRightPinching) {
                     if (!grabbedObject && now - lastSpawnTime > 600) {
-                        // Check if existing object is close to left hand pointer to grab it, otherwise spawn a new one
                         let targetObj = null;
                         for (let obj of spawnedObjects) {
                             if (obj.position.distanceTo(smoothedCursorPos) < 1.0) {
@@ -260,14 +267,10 @@ function processFrame() {
                         }
 
                         if (targetObj) {
-                            grabbedObject = targetObj; // Grab existing object
-                        } else {
-                            grabbedObject = spawnShape(smoothedCursorPos); // Spawn new object at left finger tip
+                            grabbedObject = targetObj;
                         }
-                        lastSpawnTime = now;
                     }
                 } else {
-                    // Release grabbed object when right hand unpinches
                     grabbedObject = null;
                 }
             }
