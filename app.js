@@ -11,7 +11,6 @@ const REQUIRED_CONFIRMATION_FRAMES = 25;
 let latestPose = null;
 let latestHands = null;
 
-// Three.js Setup
 const scene = new THREE.Scene();
 const camera3D = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
 camera3D.position.z = 5;
